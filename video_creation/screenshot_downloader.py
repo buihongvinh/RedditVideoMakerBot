@@ -1,9 +1,12 @@
 import json
 import re
+import textwrap
 from pathlib import Path
 from typing import Dict, Final
 
 import translators
+from PIL import Image, ImageDraw, ImageFont
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import ViewportSize, sync_playwright
 from rich.progress import track
 
@@ -14,6 +17,137 @@ from utils.playwright import clear_cookie_by_name
 from utils.videos import save_data
 
 __all__ = ["get_screenshots_of_reddit_posts"]
+
+DEFAULT_POST_LANG = "en"
+DEFAULT_SCREENSHOT_ZOOM = 1.35
+
+
+def should_translate(lang: str) -> bool:
+    normalized = str(lang or "").strip().lower()
+    return normalized not in {"", "en", "en-us"}
+
+
+POST_LOCATOR_CANDIDATES = [
+    '[data-test-id="post-content"]',
+    '[data-testid="post-container"]',
+    'shreddit-post',
+    'article',
+    'main article',
+]
+
+
+def _first_visible_locator(page, selectors, *, timeout: int = 3000):
+    for selector in selectors:
+        locator = page.locator(selector).first
+        try:
+            locator.wait_for(state="visible", timeout=timeout)
+            print_substep(f"Matched screenshot selector: {selector}", style="blue")
+            return locator
+        except PlaywrightError:
+            continue
+    return None
+
+
+def _comment_locator_candidates(comment_id: str):
+    return [
+        f"#t1_{comment_id}",
+        f'[thingid="t1_{comment_id}"]',
+        f'[data-fullname="t1_{comment_id}"]',
+        f'shreddit-comment#t1_{comment_id}',
+        f'article[id="t1_{comment_id}"]',
+    ]
+
+
+def _resolve_comment_capture_locator(page, comment_id: str):
+    container = _first_visible_locator(page, _comment_locator_candidates(comment_id), timeout=4000)
+    if container is None:
+        return None, None
+
+    focused_candidates = [
+        'div[id$="-comment-rtjson-content"]',
+        '[data-testid="comment"]',
+        '[slot="comment"]',
+        '[id="comment-tree"] [data-testid="comment"]',
+        'div[data-testid="comment"]',
+    ]
+    for selector in focused_candidates:
+        locator = container.locator(selector).first
+        try:
+            locator.wait_for(state="visible", timeout=1500)
+            print_substep(f"Matched comment body selector: {selector}", style="blue")
+            return container, locator
+        except PlaywrightError:
+            continue
+
+    print_substep("Using full comment container screenshot.", style="yellow")
+    return container, container
+
+
+def _clip_from_locator(locator, zoom: float = 1.0, *, padding_x: int = 28, padding_y: int = 36):
+    location = locator.bounding_box()
+    if location is None:
+        raise TimeoutError("Could not read bounding box for screenshot target.")
+
+    clip = {
+        "x": max(location["x"] - padding_x, 0),
+        "y": max(location["y"] - padding_y, 0),
+        "width": location["width"] + (padding_x * 2),
+        "height": location["height"] + (padding_y * 2),
+    }
+    if zoom != 1:
+        for key in clip:
+            clip[key] = float("{:.2f}".format(clip[key] * zoom))
+    return clip
+
+
+def _prepare_capture_layout(page):
+    page.evaluate(
+        """
+        () => {
+            document.documentElement.style.scrollPaddingTop = '120px';
+            const selectors = [
+                'header',
+                'nav',
+                '[role="banner"]',
+                'reddit-header-large',
+                'shreddit-app > div:first-child',
+                'faceplate-search-input',
+                '[data-testid="search-trigger"]'
+            ];
+            for (const selector of selectors) {
+                for (const node of document.querySelectorAll(selector)) {
+                    node.style.visibility = 'hidden';
+                    node.style.pointerEvents = 'none';
+                }
+            }
+        }
+        """
+    )
+
+
+def _screenshot_locator(locator, path: str):
+    locator.scroll_into_view_if_needed()
+    locator.screenshot(path=path)
+
+
+def _write_comment_fallback_image(comment: dict, path: str, *, width: int = 900, body_override: str | None = None):
+    body = re.sub(r"\s+", " ", body_override or comment.get("comment_body", "")).strip()
+    body = body or "[comment unavailable]"
+    font = ImageFont.truetype("fonts/Roboto-Bold.ttf", 58)
+    padding_x = 42
+    padding_y = 34
+    line_height = 74
+    wrapped = []
+    for paragraph in body.splitlines() or [body]:
+        wrapped.extend(textwrap.wrap(paragraph, width=28) or [""])
+    height = max(180, padding_y * 2 + line_height * len(wrapped))
+    image = Image.new("RGBA", (width, height), (17, 22, 27, 232))
+    draw = ImageDraw.Draw(image)
+    y = padding_y
+    for line in wrapped:
+        draw.text((padding_x, y), line, fill=(245, 248, 250), font=font)
+        y += line_height
+    image.save(path)
 
 
 def get_screenshots_of_reddit_posts(reddit_object: dict, screenshot_num: int):
@@ -26,8 +160,9 @@ def get_screenshots_of_reddit_posts(reddit_object: dict, screenshot_num: int):
     # settings values
     W: Final[int] = int(settings.config["settings"]["resolution_w"])
     H: Final[int] = int(settings.config["settings"]["resolution_h"])
-    lang: Final[str] = settings.config["reddit"]["thread"]["post_lang"]
+    lang: Final[str] = settings.config["reddit"]["thread"]["post_lang"] or DEFAULT_POST_LANG
     storymode: Final[bool] = settings.config["settings"]["storymode"]
+    zoom_level: Final[float] = float(settings.config["settings"]["zoom"] or DEFAULT_SCREENSHOT_ZOOM)
 
     print_step("Downloading screenshots of reddit posts...")
     reddit_id = re.sub(r"[^\w\s-]", "", reddit_object["thread_id"])
@@ -81,7 +216,7 @@ def get_screenshots_of_reddit_posts(reddit_object: dict, screenshot_num: int):
         dsf = (W // 600) + 1
 
         context = browser.new_context(
-            locale=lang or "en-CA,en;q=0.9",
+            locale=lang or "en-US,en;q=0.9",
             color_scheme="dark",
             viewport=ViewportSize(width=W, height=H),
             device_scale_factor=dsf,
@@ -96,30 +231,12 @@ def get_screenshots_of_reddit_posts(reddit_object: dict, screenshot_num: int):
 
         context.add_cookies(cookies)  # load preference cookies
 
-        # Login to Reddit
-        print_substep("Logging in to Reddit...")
         page = context.new_page()
-        page.goto("https://www.reddit.com/login", timeout=0)
+        print_substep("Opening Reddit without login...")
+        page.goto("https://www.reddit.com", timeout=0)
         page.set_viewport_size(ViewportSize(width=1920, height=1080))
         page.wait_for_load_state()
-
-        page.locator(f'input[name="username"]').fill(settings.config["reddit"]["creds"]["username"])
-        page.locator(f'input[name="password"]').fill(settings.config["reddit"]["creds"]["password"])
-        page.get_by_role("button", name="Log In").click()
-        page.wait_for_timeout(5000)
-
-        login_error_div = page.locator(".AnimatedForm__errorMessage").first
-        if login_error_div.is_visible():
-
-            print_substep(
-                "Your reddit credentials are incorrect! Please modify them accordingly in the config.toml file.",
-                style="red",
-            )
-            exit()
-        else:
-            pass
-
-        page.wait_for_load_state()
+        page.wait_for_timeout(3000)
         # Handle the redesign
         # Check if the redesign optout cookie is set
         if page.locator("#redesign-beta-optin-btn").is_visible():
@@ -132,6 +249,14 @@ def get_screenshots_of_reddit_posts(reddit_object: dict, screenshot_num: int):
         page.set_viewport_size(ViewportSize(width=W, height=H))
         page.wait_for_load_state()
         page.wait_for_timeout(5000)
+        _prepare_capture_layout(page)
+
+        if page.locator('button:has-text("Accept all")').first.is_visible():
+            page.locator('button:has-text("Accept all")').first.click()
+            page.wait_for_timeout(1000)
+        if page.locator('button:has-text("Continue")').first.is_visible():
+            page.locator('button:has-text("Continue")').first.click()
+            page.wait_for_timeout(1000)
 
         if page.locator(
             "#t3_12hmbug > div > div._3xX726aBn29LDbsDtzr_6E._1Ap4F5maDtT1E1YuCiaO0r.D3IL3FD0RFy_mkKLPwL4 > div > div > button"
@@ -152,7 +277,7 @@ def get_screenshots_of_reddit_posts(reddit_object: dict, screenshot_num: int):
                 "#SHORTCUT_FOCUSABLE_DIV > div:nth-child(7) > div > div > div > header > div > div._1m0iFpls1wkPZJVo38-LSh > button > i"
             ).click()  # Interest popup is showing, this code will close it
 
-        if lang:
+        if should_translate(lang):
             print_substep("Translating post...")
             texts_in_tl = translators.translate_text(
                 reddit_object["thread_title"],
@@ -161,7 +286,16 @@ def get_screenshots_of_reddit_posts(reddit_object: dict, screenshot_num: int):
             )
 
             page.evaluate(
-                "tl_content => document.querySelector('[data-adclicklocation=\"title\"] > div > div > h1').textContent = tl_content",
+                """
+                tl_content => {
+                    const titleNode =
+                      document.querySelector('[data-adclicklocation="title"] > div > div > h1') ||
+                      document.querySelector('h1');
+                    if (titleNode) {
+                        titleNode.textContent = tl_content;
+                    }
+                }
+                """,
                 texts_in_tl,
             )
         else:
@@ -169,18 +303,20 @@ def get_screenshots_of_reddit_posts(reddit_object: dict, screenshot_num: int):
 
         postcontentpath = f"assets/temp/{reddit_id}/png/title.png"
         try:
-            if settings.config["settings"]["zoom"] != 1:
-                # store zoom settings
-                zoom = settings.config["settings"]["zoom"]
-                # zoom the body of the page
-                page.evaluate("document.body.style.zoom=" + str(zoom))
-                # as zooming the body doesn't change the properties of the divs, we need to adjust for the zoom
-                location = page.locator('[data-test-id="post-content"]').bounding_box()
-                for i in location:
-                    location[i] = float("{:.2f}".format(location[i] * zoom))
-                page.screenshot(clip=location, path=postcontentpath)
+            post_locator = _first_visible_locator(page, POST_LOCATOR_CANDIDATES, timeout=4000)
+            if post_locator is None:
+                if storymode:
+                    raise TimeoutError("Unable to locate a visible Reddit post container.")
+                print_substep(
+                    "No Reddit post container matched current selectors. Skipping title screenshot in comment mode.",
+                    style="yellow",
+                )
             else:
-                page.locator('[data-test-id="post-content"]').screenshot(path=postcontentpath)
+                if zoom_level != 1:
+                    page.evaluate("document.body.style.zoom=" + str(zoom_level))
+                    _screenshot_locator(post_locator, postcontentpath)
+                else:
+                    _screenshot_locator(post_locator, postcontentpath)
         except Exception as e:
             print_substep("Something went wrong!", style="red")
             resp = input(
@@ -205,60 +341,29 @@ def get_screenshots_of_reddit_posts(reddit_object: dict, screenshot_num: int):
                 path=f"assets/temp/{reddit_id}/png/story_content.png"
             )
         else:
+            captured_comments = []
             for idx, comment in enumerate(
                 track(
                     reddit_object["comments"][:screenshot_num],
-                    "Downloading screenshots...",
+                    "Generating matching comment cards...",
                 )
             ):
-                # Stop if we have reached the screenshot_num
-                if idx >= screenshot_num:
-                    break
-
-                if page.locator('[data-testid="content-gate"]').is_visible():
-                    page.locator('[data-testid="content-gate"] button').click()
-
-                page.goto(f"https://new.reddit.com/{comment['comment_url']}")
-
-                # translate code
-
-                if settings.config["reddit"]["thread"]["post_lang"]:
-                    comment_tl = translators.translate_text(
+                output_path = f"assets/temp/{reddit_id}/png/comment_{idx}.png"
+                card_text = comment["comment_body"]
+                if should_translate(lang):
+                    card_text = translators.translate_text(
                         comment["comment_body"],
                         translator="google",
-                        to_language=settings.config["reddit"]["thread"]["post_lang"],
+                        to_language=lang,
                     )
-                    page.evaluate(
-                        '([tl_content, tl_id]) => document.querySelector(`#t1_${tl_id} > div:nth-child(2) > div > div[data-testid="comment"] > div`).textContent = tl_content',
-                        [comment_tl, comment["comment_id"]],
-                    )
-                try:
-                    if settings.config["settings"]["zoom"] != 1:
-                        # store zoom settings
-                        zoom = settings.config["settings"]["zoom"]
-                        # zoom the body of the page
-                        page.evaluate("document.body.style.zoom=" + str(zoom))
-                        # scroll comment into view
-                        page.locator(f"#t1_{comment['comment_id']}").scroll_into_view_if_needed()
-                        # as zooming the body doesn't change the properties of the divs, we need to adjust for the zoom
-                        location = page.locator(f"#t1_{comment['comment_id']}").bounding_box()
-                        for i in location:
-                            location[i] = float("{:.2f}".format(location[i] * zoom))
-                        page.screenshot(
-                            clip=location,
-                            path=f"assets/temp/{reddit_id}/png/comment_{idx}.png",
-                        )
-                    else:
-                        page.locator(f"#t1_{comment['comment_id']}").screenshot(
-                            path=f"assets/temp/{reddit_id}/png/comment_{idx}.png"
-                        )
-                except TimeoutError:
-                    del reddit_object["comments"]
-                    screenshot_num += 1
-                    print("TimeoutError: Skipping screenshot...")
-                    continue
+                _write_comment_fallback_image(comment, path=output_path, body_override=card_text)
+                captured_comments.append(comment)
+            reddit_object["comments"] = captured_comments
 
         # close browser instance when we are done using it
         browser.close()
 
     print_substep("Screenshots downloaded Successfully.", style="bold green")
+    if storymode:
+        return screenshot_num
+    return len(reddit_object.get("comments", [])[:screenshot_num])

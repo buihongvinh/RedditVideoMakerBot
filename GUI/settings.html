@@ -15,9 +15,9 @@
                         <div class="input-group-text">
                             <i class="bi bi-person"></i>
                         </div>
-                        <input name="client_id" value="{{ data.client_id }}" placeholder="Your Reddit app's client ID"
+                        <input name="client_id" value="{{ data.client_id }}" placeholder="Unused in browser fallback"
                             type="text" class="form-control" data-toggle="tooltip"
-                            data-original-title='Text under "personal use script" on www.reddit.com/prefs/apps'>
+                            data-original-title='Leave blank when using the browser fallback'>
                     </div>
                 </div>
             </div>
@@ -29,8 +29,8 @@
                             <i class="bi bi-key-fill"></i>
                         </div>
                         <input name="client_secret" value="{{ data.client_secret }}"
-                            placeholder="Your Reddit app's client secret" type="text" class="form-control"
-                            data-toggle="tooltip" data-original-title='"Secret" on www.reddit.com/prefs/apps'>
+                            placeholder="Unused in browser fallback" type="text" class="form-control"
+                            data-toggle="tooltip" data-original-title='Leave blank when using the browser fallback'>
                     </div>
                 </div>
             </div>
@@ -41,7 +41,7 @@
                         <div class="input-group-text">
                             <i class="bi bi-person-fill"></i>
                         </div>
-                        <input name="username" value="{{ data.username }}" placeholder="Your Reddit account's username"
+                        <input name="username" value="{{ data.username }}" placeholder="Unused in browser fallback"
                             type="text" class="form-control">
                     </div>
                 </div>
@@ -53,21 +53,19 @@
                         <div class="input-group-text">
                             <i class="bi bi-lock-fill"></i>
                         </div>
-                        <input name="password" value="{{ data.password }}" placeholder="Your Reddit account's password"
+                        <input name="password" value="{{ data.password }}" placeholder="Unused in browser fallback"
                             type="password" class="form-control">
                     </div>
                 </div>
             </div>
             <div class="row mb-2">
-                <label class="col-4">Do you have Reddit 2FA enabled?</label>
+                <label class="col-4">2FA</label>
                 <div class="col-8">
                     <div class="form-check form-switch">
                         <input name="2fa" class="form-check-input" type="checkbox" value="True" data-toggle="tooltip"
                             data-original-title='Check it if you have enabled 2FA on your Reddit account'>
                     </div>
-                    <span class="form-text text-muted"><a
-                            href="https://reddit-video-maker-bot.netlify.app/docs/configuring#setting-up-the-api"
-                            target="_blank">Need help? Click here to open step-by-step guide.</a></span>
+                    <span class="form-text text-muted">The bot now falls back to browser mode when public JSON returns 403.</span>
                 </div>
             </div>
 
@@ -253,12 +251,47 @@
                 <div class="col-8">
                     <select name="voice_choice" class="form-select" data-toggle="tooltip"
                         data-original-title='The voice platform used for TTS generation'>
+                        <option value="edge">Edge TTS</option>
                         <option value="streamlabspolly">Streamlabspolly</option>
                         <option value="tiktok">TikTok</option>
                         <option value="googletranslate">Google Translate</option>
                         <option value="awspolly">AWS Polly</option>
                         <option value="pyttsx">Python TTS (pyttsx)</option>
                     </select>
+                </div>
+            </div>
+            <div class="row mb-2">
+                <label for="edge_tts_voice" class="col-4">Edge TTS Voice</label>
+                <div class="col-8">
+                    <div class="input-group">
+                        <div class="input-group-text">
+                            <i class="bi bi-mic-fill"></i>
+                        </div>
+                        <input value="{{ data.edge_tts_voice }}" name="edge_tts_voice" type="text" class="form-control"
+                            placeholder="en-US-AriaNeural" data-toggle="tooltip"
+                            data-original-title='Microsoft Edge TTS voice name'>
+                    </div>
+                </div>
+            </div>
+            <div class="row mb-2">
+                <label for="edge_tts_rate" class="col-4">Edge TTS Rate</label>
+                <div class="col-8">
+                    <input value="{{ data.edge_tts_rate }}" name="edge_tts_rate" type="text" class="form-control"
+                        placeholder="+0%">
+                </div>
+            </div>
+            <div class="row mb-2">
+                <label for="edge_tts_volume" class="col-4">Edge TTS Volume</label>
+                <div class="col-8">
+                    <input value="{{ data.edge_tts_volume }}" name="edge_tts_volume" type="text" class="form-control"
+                        placeholder="+0%">
+                </div>
+            </div>
+            <div class="row mb-2">
+                <label for="edge_tts_pitch" class="col-4">Edge TTS Pitch</label>
+                <div class="col-8">
+                    <input value="{{ data.edge_tts_pitch }}" name="edge_tts_pitch" type="text" class="form-control"
+                        placeholder="+0Hz">
                 </div>
             </div>
             <div class="row mb-2">

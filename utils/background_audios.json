@@ -1,5 +1,40 @@
 {
     "__comment": "Supported Backgrounds Audio. Can add/remove background audio here...",
+    "ambient": [
+        "generated://ambient-pad",
+        "ambient-pad.mp3",
+        "Generated"
+    ],
+    "pixabay-lo-fi": [
+        "pixabay://lo-fi",
+        "pixabay-lo-fi.mp3",
+        "Pixabay"
+    ],
+    "pixabay-cinematic": [
+        "pixabay://cinematic",
+        "pixabay-cinematic.mp3",
+        "Pixabay"
+    ],
+    "pixabay-horror": [
+        "pixabay://horror",
+        "pixabay-horror.mp3",
+        "Pixabay"
+    ],
+    "pixabay-piano": [
+        "pixabay://piano",
+        "pixabay-piano.mp3",
+        "Pixabay"
+    ],
+    "pixabay-ambient": [
+        "pixabay://ambient",
+        "pixabay-ambient.mp3",
+        "Pixabay"
+    ],
+    "pixabay-documentary": [
+        "pixabay://documentary",
+        "pixabay-documentary.mp3",
+        "Pixabay"
+    ],
     "lofi": [
         "https://www.youtube.com/watch?v=LTphVIore3A",
         "lofi.mp3",

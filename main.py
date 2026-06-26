@@ -6,7 +6,7 @@ from pathlib import Path
 from subprocess import Popen
 from typing import Dict, NoReturn
 
-from prawcore import ResponseException
+import ffmpeg
 
 from reddit.subreddit import get_subreddit_threads
 from utils import settings
@@ -46,6 +46,19 @@ reddit_id: str
 reddit_object: Dict[str, str | list]
 
 
+def calculate_audio_length(thread_id: str, number_of_comments: int) -> int:
+    """Return the duration of the exact audio files that will be used in the final video."""
+    mp3_dir = Path(f"assets/temp/{thread_id}/mp3")
+    filenames = ["title.mp3"] + [f"{idx}.mp3" for idx in range(number_of_comments)]
+    duration = 0.0
+    for filename in filenames:
+        path = mp3_dir / filename
+        if not path.is_file():
+            continue
+        duration += float(ffmpeg.probe(str(path))["format"]["duration"])
+    return math.ceil(duration)
+
+
 def main(POST_ID=None) -> None:
     global reddit_id, reddit_object
     reddit_object = get_subreddit_threads(POST_ID)
@@ -53,7 +66,15 @@ def main(POST_ID=None) -> None:
     print_substep(f"Thread ID is {reddit_id}", style="bold blue")
     length, number_of_comments = save_text_to_mp3(reddit_object)
     length = math.ceil(length)
-    get_screenshots_of_reddit_posts(reddit_object, number_of_comments)
+    actual_screenshot_count = get_screenshots_of_reddit_posts(reddit_object, number_of_comments)
+    if not settings.config["settings"]["storymode"]:
+        number_of_comments = min(number_of_comments, int(actual_screenshot_count or 0))
+        reddit_object["comments"] = reddit_object["comments"][:number_of_comments]
+        length = calculate_audio_length(reddit_id, number_of_comments)
+        print_substep(
+            f"Matched render set: title + {number_of_comments} comments, {length}s audio.",
+            style="bold blue",
+        )
     bg_config = {
         "video": get_background_config("video"),
         "audio": get_background_config("audio"),
@@ -95,15 +116,6 @@ if __name__ == "__main__":
     )
     config is False and sys.exit()
 
-    if (
-        not settings.config["settings"]["tts"]["tiktok_sessionid"]
-        or settings.config["settings"]["tts"]["tiktok_sessionid"] == ""
-    ) and config["settings"]["tts"]["voice_choice"] == "tiktok":
-        print_substep(
-            "TikTok voice requires a sessionid! Check our documentation on how to obtain one.",
-            "bold red",
-        )
-        sys.exit()
     try:
         if config["reddit"]["thread"]["post_id"]:
             for index, post_id in enumerate(config["reddit"]["thread"]["post_id"].split("+")):
@@ -118,10 +130,6 @@ if __name__ == "__main__":
         else:
             main()
     except KeyboardInterrupt:
-        shutdown()
-    except ResponseException:
-        print_markdown("## Invalid credentials")
-        print_markdown("Please check your credentials in the config.toml file")
         shutdown()
     except Exception as err:
         config["settings"]["tts"]["tiktok_sessionid"] = "REDACTED"

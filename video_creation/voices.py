@@ -3,6 +3,7 @@ from typing import Tuple
 from rich.console import Console
 
 from TTS.aws_polly import AWSPolly
+from TTS.edge_tts import EdgeTTS
 from TTS.elevenlabs import elevenlabs
 from TTS.engine_wrapper import TTSEngine
 from TTS.GTTS import GTTS
@@ -16,6 +17,7 @@ from utils.console import print_step, print_table
 console = Console()
 
 TTSProviders = {
+    "Edge": EdgeTTS,
     "GoogleTranslate": GTTS,
     "AWSPolly": AWSPolly,
     "StreamlabsPolly": StreamlabsPolly,
@@ -24,6 +26,21 @@ TTSProviders = {
     "ElevenLabs": elevenlabs,
     "OpenAI": OpenAITTS,
 }
+
+
+def resolve_tts_provider_name(configured_voice: str) -> str:
+    voice = str(configured_voice or "").strip()
+    if voice.casefold() != "tiktok":
+        return voice
+
+    session_id = settings.config["settings"]["tts"].get("tiktok_sessionid", "")
+    if session_id:
+        return voice
+
+    fallback_voice = "edge"
+    print_step("TikTok sessionid is missing. Falling back to Edge TTS.")
+    settings.config["settings"]["tts"]["voice_choice"] = fallback_voice
+    return fallback_voice
 
 
 def save_text_to_mp3(reddit_obj) -> Tuple[int, int]:
@@ -36,7 +53,7 @@ def save_text_to_mp3(reddit_obj) -> Tuple[int, int]:
         tuple[int,int]: (total length of the audio, the number of comments audio was generated for)
     """
 
-    voice = settings.config["settings"]["tts"]["voice_choice"]
+    voice = resolve_tts_provider_name(settings.config["settings"]["tts"]["voice_choice"])
     if str(voice).casefold() in map(lambda _: _.casefold(), TTSProviders):
         text_to_mp3 = TTSEngine(get_case_insensitive_key_value(TTSProviders, voice), reddit_obj)
     else:

@@ -19,6 +19,11 @@ DEFAULT_MAX_LENGTH: int = (
 )
 
 
+def should_translate(lang: str) -> bool:
+    normalized = str(lang or "").strip().lower()
+    return normalized not in {"", "en", "en-us"}
+
+
 class TTSEngine:
     """Calls the given TTS engine to reduce code duplication and allow multiple TTS engines.
 
@@ -48,6 +53,7 @@ class TTSEngine:
         self.max_length = max_length
         self.length = 0
         self.last_clip_length = last_clip_length
+        self.provider_name = self.tts_module.__class__.__name__
 
     def add_periods(
         self,
@@ -69,11 +75,13 @@ class TTSEngine:
     def run(self) -> Tuple[int, int]:
         Path(self.path).mkdir(parents=True, exist_ok=True)
         print_step("Saving Text to MP3 files...")
+        print_substep(f"TTS provider: {self.provider_name}", style="bold blue")
 
         self.add_periods()
+        print_substep("Generating title audio...", style="bold blue")
         self.call_tts("title", process_text(self.reddit_object["thread_title"]))
         # processed_text = ##self.reddit_object["thread_post"] != ""
-        idx = 0
+        generated_count = 0
 
         if settings.config["settings"]["storymode"]:
             if settings.config["settings"]["storymodemethod"] == 0:
@@ -81,26 +89,34 @@ class TTSEngine:
                     self.split_post(self.reddit_object["thread_post"], "postaudio")
                 else:
                     self.call_tts("postaudio", process_text(self.reddit_object["thread_post"]))
+                generated_count = 1
             elif settings.config["settings"]["storymodemethod"] == 1:
                 for idx, text in track(enumerate(self.reddit_object["thread_post"])):
+                    print_substep(f"Generating story clip {idx}...", style="blue")
                     self.call_tts(f"postaudio-{idx}", process_text(text))
+                    generated_count += 1
 
         else:
+            generated_comments = []
             for idx, comment in track(enumerate(self.reddit_object["comments"]), "Saving..."):
                 # ! Stop creating mp3 files if the length is greater than max length.
                 if self.length > self.max_length and idx > 1:
                     self.length -= self.last_clip_length
-                    idx -= 1
                     break
                 if (
                     len(comment["comment_body"]) > self.tts_module.max_chars
                 ):  # Split the comment if it is too long
-                    self.split_post(comment["comment_body"], idx)  # Split the comment
+                    print_substep(f"Generating comment audio {idx} in split mode...", style="blue")
+                    self.split_post(comment["comment_body"], generated_count)  # Split the comment
                 else:  # If the comment is not too long, just call the tts engine
-                    self.call_tts(f"{idx}", process_text(comment["comment_body"]))
+                    print_substep(f"Generating comment audio {generated_count}...", style="blue")
+                    self.call_tts(f"{generated_count}", process_text(comment["comment_body"]))
+                generated_comments.append(comment)
+                generated_count += 1
+            self.reddit_object["comments"] = generated_comments
 
         print_substep("Saved Text to MP3 files successfully.", style="bold green")
-        return self.length, idx
+        return self.length, generated_count
 
     def split_post(self, text: str, idx):
         split_files = []
@@ -143,6 +159,7 @@ class TTSEngine:
             print("OSError")
 
     def call_tts(self, filename: str, text: str):
+        print_substep(f"Synthesizing {filename}.mp3...", style="blue")
         if settings.config["settings"]["tts"]["voice_choice"] == "googletranslate":
             # GTTS does not have the argument 'random_voice'
             self.tts_module.run(
@@ -179,9 +196,9 @@ class TTSEngine:
 
 
 def process_text(text: str, clean: bool = True):
-    lang = settings.config["reddit"]["thread"]["post_lang"]
+    lang = settings.config["reddit"]["thread"]["post_lang"] or "en"
     new_text = sanitize_text(text) if clean else text
-    if lang:
+    if should_translate(lang):
         print_substep("Translating Text...")
         translated_text = translators.translate_text(text, translator="google", to_language=lang)
         new_text = sanitize_text(translated_text)

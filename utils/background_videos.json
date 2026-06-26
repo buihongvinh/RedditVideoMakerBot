@@ -1,5 +1,77 @@
 {
     "__comment": "Supported Backgrounds. Can add/remove background video here...",
+    "procedural": [
+        "generated://aurora-gradient",
+        "procedural-aurora.mp4",
+        "Generated",
+        "center"
+    ],
+    "relaxing-rain": [
+        "pexels://relaxing rain",
+        "relaxing-rain.mp4",
+        "Pexels",
+        "center"
+    ],
+    "keyboard-typing": [
+        "pexels://keyboard typing",
+        "keyboard-typing.mp4",
+        "Pexels",
+        "center"
+    ],
+    "satisfying": [
+        "pexels://satisfying",
+        "satisfying.mp4",
+        "Pexels",
+        "center"
+    ],
+    "subway": [
+        "pexels://subway",
+        "subway.mp4",
+        "Pexels",
+        "center"
+    ],
+    "city-night": [
+        "pexels://city night",
+        "city-night.mp4",
+        "Pexels",
+        "center"
+    ],
+    "aesthetic-room": [
+        "pexels://aesthetic room",
+        "aesthetic-room.mp4",
+        "Pexels",
+        "center"
+    ],
+    "driving-night": [
+        "pexels://driving night",
+        "driving-night.mp4",
+        "Pexels",
+        "center"
+    ],
+    "walking-pov": [
+        "pexels://walking POV",
+        "walking-pov.mp4",
+        "Pexels",
+        "center"
+    ],
+    "forest-loop": [
+        "pexels://forest loop",
+        "forest-loop.mp4",
+        "Pexels",
+        "center"
+    ],
+    "fireplace": [
+        "pexels://fireplace",
+        "fireplace.mp4",
+        "Pexels",
+        "center"
+    ],
+    "aquarium": [
+        "pexels://aquarium",
+        "aquarium.mp4",
+        "Pexels",
+        "center"
+    ],
     "motor-gta": [
         "https://www.youtube.com/watch?v=vw5L4xCPy9Q",
         "bike-parkour-gta.mp4",

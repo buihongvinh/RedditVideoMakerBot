@@ -1,6 +1,7 @@
 import multiprocessing
 import os
 import re
+import subprocess
 import tempfile
 import textwrap
 import threading
@@ -24,6 +25,57 @@ from utils.thumbnail import create_thumbnail
 from utils.videos import save_data
 
 console = Console()
+
+
+def should_translate(lang: str) -> bool:
+    normalized = str(lang or "").strip().lower()
+    return normalized not in {"", "en", "en-us"}
+
+
+def get_video_output_kwargs(codec: str) -> dict:
+    return {
+        "c:v": codec,
+        "b:v": "20M",
+        "b:a": "192k",
+        "threads": multiprocessing.cpu_count(),
+    }
+
+
+def ffmpeg_has_filter(filter_name: str) -> bool:
+    result = subprocess.run(
+        ["ffmpeg", "-filters"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return filter_name in result.stdout
+
+
+def run_ffmpeg_with_codec_fallback(build_output, stage_name: str):
+    errors = []
+    for codec in ("h264_nvenc", "libx264"):
+        try:
+            if codec == "libx264":
+                print_substep(f"{stage_name}: falling back to libx264 encoder.", style="yellow")
+            output = build_output(codec)
+            output.run(
+                quiet=True,
+                overwrite_output=True,
+                capture_stdout=False,
+                capture_stderr=True,
+            )
+            return
+        except ffmpeg.Error as error:
+            errors.append((codec, error))
+            stderr = error.stderr.decode("utf8", errors="replace") if error.stderr else str(error)
+            if "Unknown encoder" not in stderr and "Error selecting an encoder" not in stderr:
+                print(stderr)
+                raise
+
+    last_codec, last_error = errors[-1]
+    stderr = last_error.stderr.decode("utf8", errors="replace") if last_error.stderr else str(last_error)
+    print(stderr)
+    raise last_error
 
 
 class ProgressFfmpeg(threading.Thread):
@@ -75,8 +127,8 @@ def name_normalize(name: str) -> str:
     name = re.sub(r"(\w+)\s?\/\s?(\w+)", r"\1 or \2", name)
     name = re.sub(r"\/", r"", name)
 
-    lang = settings.config["reddit"]["thread"]["post_lang"]
-    if lang:
+    lang = settings.config["reddit"]["thread"]["post_lang"] or "en"
+    if should_translate(lang):
         print_substep("Translating filename...")
         translated_name = translators.translate_text(name, translator="google", to_language=lang)
         return translated_name
@@ -84,27 +136,29 @@ def name_normalize(name: str) -> str:
         return name
 
 
-def prepare_background(reddit_id: str, W: int, H: int) -> str:
+def prepare_background(reddit_id: str, W: int, H: int, duration: int) -> str:
     output_path = f"assets/temp/{reddit_id}/background_noaudio.mp4"
-    output = (
-        ffmpeg.input(f"assets/temp/{reddit_id}/background.mp4")
-        .filter("crop", f"ih*({W}/{H})", "ih")
-        .output(
-            output_path,
-            an=None,
-            **{
-                "c:v": "h264_nvenc",
-                "b:v": "20M",
-                "b:a": "192k",
-                "threads": multiprocessing.cpu_count(),
-            },
-        )
-        .overwrite_output()
-    )
     try:
-        output.run(quiet=True)
-    except ffmpeg.Error as e:
-        print(e.stderr.decode("utf8"))
+        run_ffmpeg_with_codec_fallback(
+            lambda codec: (
+                ffmpeg.input(
+                    f"assets/temp/{reddit_id}/background.mp4",
+                    stream_loop=-1,
+                    t=duration,
+                )
+                .filter("crop", f"ih*({W}/{H})", "ih")
+                .filter("scale", W, H)
+                .output(
+                    output_path,
+                    t=duration,
+                    an=None,
+                    **get_video_output_kwargs(codec),
+                )
+                .overwrite_output()
+            ),
+            "Preparing background",
+        )
+    except ffmpeg.Error:
         exit(1)
     return output_path
 
@@ -224,8 +278,6 @@ def make_final_video(
 
     print_step("Creating the final video 🎥")
 
-    background_clip = ffmpeg.input(prepare_background(reddit_id, W=W, H=H))
-
     # Gather all audio clips
     audio_clips = list()
     if number_of_clips == 0 and settings.config["settings"]["storymode"] == "false":
@@ -262,10 +314,14 @@ def make_final_video(
     ffmpeg.output(
         audio_concat, f"assets/temp/{reddit_id}/audio.mp3", **{"b:a": "192k"}
     ).overwrite_output().run(quiet=True)
+    length = int(float(ffmpeg.probe(f"assets/temp/{reddit_id}/audio.mp3")["format"]["duration"])) + 1
 
     console.log(f"[bold green] Video Will Be: {length} Seconds Long")
 
-    screenshot_width = int((W * 45) // 100)
+    background_clip = ffmpeg.input(prepare_background(reddit_id, W=W, H=H, duration=length))
+
+    title_width = int((W * 72) // 100)
+    comment_width = int((W * 78) // 100)
     audio = ffmpeg.input(f"assets/temp/{reddit_id}/audio.mp3")
     final_audio = merge_background_audio(audio, reddit_id)
 
@@ -291,7 +347,7 @@ def make_final_video(
     image_clips.insert(
         0,
         ffmpeg.input(f"assets/temp/{reddit_id}/png/title.png")["v"].filter(
-            "scale", screenshot_width, -1
+            "scale", title_width, -1
         ),
     )
 
@@ -311,7 +367,7 @@ def make_final_video(
             image_clips.insert(
                 1,
                 ffmpeg.input(f"assets/temp/{reddit_id}/png/story_content.png").filter(
-                    "scale", screenshot_width, -1
+                    "scale", comment_width, -1
                 ),
             )
             background_clip = background_clip.overlay(
@@ -325,7 +381,7 @@ def make_final_video(
             for i in track(range(0, number_of_clips + 1), "Collecting the image files..."):
                 image_clips.append(
                     ffmpeg.input(f"assets/temp/{reddit_id}/png/img{i}.png")["v"].filter(
-                        "scale", screenshot_width, -1
+                        "scale", comment_width, -1
                     )
                 )
                 background_clip = background_clip.overlay(
@@ -336,23 +392,31 @@ def make_final_video(
                 )
                 current_time += audio_clips_durations[i]
     else:
-        for i in range(0, number_of_clips + 1):
+        background_clip = background_clip.overlay(
+            image_clips[0],
+            enable=f"between(t,{current_time},{current_time + audio_clips_durations[0]})",
+            x="(main_w-overlay_w)/2",
+            y="(main_h-overlay_h)/2",
+        )
+        current_time += audio_clips_durations[0]
+
+        for i in range(number_of_clips):
             image_clips.append(
                 ffmpeg.input(f"assets/temp/{reddit_id}/png/comment_{i}.png")["v"].filter(
-                    "scale", screenshot_width, -1
+                    "scale", comment_width, -1
                 )
             )
-            image_overlay = image_clips[i].filter("colorchannelmixer", aa=opacity)
+            image_overlay = image_clips[i + 1].filter("colorchannelmixer", aa=opacity)
             assert (
                 audio_clips_durations is not None
             ), "Please make a GitHub issue if you see this. Ping @JasonLovesDoggo on GitHub."
             background_clip = background_clip.overlay(
                 image_overlay,
-                enable=f"between(t,{current_time},{current_time + audio_clips_durations[i]})",
+                enable=f"between(t,{current_time},{current_time + audio_clips_durations[i + 1]})",
                 x="(main_w-overlay_w)/2",
                 y="(main_h-overlay_h)/2",
             )
-            current_time += audio_clips_durations[i]
+            current_time += audio_clips_durations[i + 1]
 
     title = extract_id(reddit_obj, "thread_title")
     idx = extract_id(reddit_obj)
@@ -405,15 +469,18 @@ def make_final_video(
             print_substep(f"Thumbnail - Building Thumbnail in assets/temp/{reddit_id}/thumbnail.png")
 
     text = f"Background by {background_config['video'][2]}"
-    background_clip = ffmpeg.drawtext(
-        background_clip,
-        text=text,
-        x=f"(w-text_w)",
-        y=f"(h-text_h)",
-        fontsize=5,
-        fontcolor="White",
-        fontfile=os.path.join("fonts", "Roboto-Regular.ttf"),
-    )
+    if ffmpeg_has_filter("drawtext"):
+        background_clip = ffmpeg.drawtext(
+            background_clip,
+            text=text,
+            x=f"(w-text_w)",
+            y=f"(h-text_h)",
+            fontsize=5,
+            fontcolor="White",
+            fontfile=os.path.join("fonts", "Roboto-Regular.ttf"),
+        )
+    else:
+        print_substep("ffmpeg drawtext filter is unavailable. Skipping background credit watermark.", style="yellow")
     background_clip = background_clip.filter("scale", W, H)
     print_step("Rendering the video 🎥")
     from tqdm import tqdm
@@ -432,25 +499,20 @@ def make_final_video(
             path[:251] + ".mp4"
         )  # Prevent a error by limiting the path length, do not change this.
         try:
-            ffmpeg.output(
-                background_clip,
-                final_audio,
-                path,
-                f="mp4",
-                **{
-                    "c:v": "h264_nvenc",
-                    "b:v": "20M",
-                    "b:a": "192k",
-                    "threads": multiprocessing.cpu_count(),
-                },
-            ).overwrite_output().global_args("-progress", progress.output_file.name).run(
-                quiet=True,
-                overwrite_output=True,
-                capture_stdout=False,
-                capture_stderr=False,
+            run_ffmpeg_with_codec_fallback(
+                lambda codec: ffmpeg.output(
+                    background_clip,
+                    final_audio,
+                    path,
+                    f="mp4",
+                    t=length,
+                    **get_video_output_kwargs(codec),
+                )
+                .overwrite_output()
+                .global_args("-progress", progress.output_file.name),
+                "Rendering final video",
             )
         except ffmpeg.Error as e:
-            print(e.stderr.decode("utf8"))
             exit(1)
     old_percentage = pbar.n
     pbar.update(100 - old_percentage)
@@ -462,25 +524,20 @@ def make_final_video(
         print_step("Rendering the Only TTS Video 🎥")
         with ProgressFfmpeg(length, on_update_example) as progress:
             try:
-                ffmpeg.output(
-                    background_clip,
-                    audio,
-                    path,
-                    f="mp4",
-                    **{
-                        "c:v": "h264_nvenc",
-                        "b:v": "20M",
-                        "b:a": "192k",
-                        "threads": multiprocessing.cpu_count(),
-                    },
-                ).overwrite_output().global_args("-progress", progress.output_file.name).run(
-                    quiet=True,
-                    overwrite_output=True,
-                    capture_stdout=False,
-                    capture_stderr=False,
+                run_ffmpeg_with_codec_fallback(
+                    lambda codec: ffmpeg.output(
+                        background_clip,
+                        audio,
+                        path,
+                        f="mp4",
+                        t=length,
+                        **get_video_output_kwargs(codec),
+                    )
+                    .overwrite_output()
+                    .global_args("-progress", progress.output_file.name),
+                    "Rendering Only TTS video",
                 )
             except ffmpeg.Error as e:
-                print(e.stderr.decode("utf8"))
                 exit(1)
 
         old_percentage = pbar.n
